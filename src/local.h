@@ -27,6 +27,8 @@
 
 #include "ss_event.h"
 
+#include "http.h"
+
 #ifdef __MINGW32__
 #include "ss_windows.h"
 #endif
@@ -55,6 +57,9 @@ typedef struct server_ctx {
 typedef struct server {
     int fd;
     int stage;
+    int protocol; /* 0 = SOCKS5, 1 = HTTP proxy */
+    int http_parsed;
+    http_request_t http_req;
     struct local_dns_query *dns_query;
     int dns_done, dns_success;
     struct sockaddr_storage dns_address;

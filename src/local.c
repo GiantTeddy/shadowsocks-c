@@ -840,6 +840,240 @@ server_stream(SS_P_ ss_io *w, buffer_t *buf)
 }
 
 static void
+http_send_error(server_t *server, const char *status)
+{
+    char buf[128];
+    int n = snprintf(buf, sizeof(buf),
+                     "HTTP/1.1 %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                     status);
+    if (n > 0)
+        send(server->fd, buf, (size_t)n, 0);
+}
+
+/*
+ * Decide whether an HTTP destination should bypass the proxy. This mirrors the
+ * SOCKS5 ACL logic but resolves synchronously, because the HTTP request is
+ * already buffered. Returns 1 and fills storage when the request bypasses.
+ */
+static int
+local_http_should_bypass(const char *host, const char *port, int atyp,
+                         struct sockaddr_storage *storage, char *ip, size_t ip_len)
+{
+    int bypass   = 0;
+    int resolved = 0;
+
+    if (!acl
+#ifdef __ANDROID__
+        || (vpn && strcmp(port, "53") == 0)
+#endif
+        )
+        return 0;
+
+    int host_match = 0;
+    if (atyp == SOCKS5_ATYP_DOMAIN)
+        host_match = acl_match_host(host);
+
+    if (host_match > 0) {
+        bypass = 1;                                     // bypass hostnames in black list
+    } else if (host_match < 0) {
+        bypass = 0;                                     // proxy hostnames in white list
+    } else {
+        if (atyp == SOCKS5_ATYP_DOMAIN) {
+            if (get_sockaddr((char *)host, (char *)port, storage, 1, ipv6first) != 0)
+                return 0;
+            switch (((struct sockaddr *)storage)->sa_family) {
+            case AF_INET:
+                if (!ss_inet_ntop(AF_INET, &((struct sockaddr_in *)storage)->sin_addr,
+                                  ip, (socklen_t)ip_len))
+                    return 0;
+                break;
+            case AF_INET6:
+                if (!ss_inet_ntop(AF_INET6, &((struct sockaddr_in6 *)storage)->sin6_addr,
+                                  ip, (socklen_t)ip_len))
+                    return 0;
+                break;
+            default:
+                return 0;
+            }
+            resolved = 1;
+        }
+
+        int ip_match = (resolved || atyp == SOCKS5_ATYP_IPV4
+                        || atyp == SOCKS5_ATYP_IPV6) ? acl_match_host(ip) : 0;
+
+        switch (get_acl_mode()) {
+        case BLACK_LIST:
+            if (ip_match > 0)
+                bypass = 1;                             // bypass IPs in black list
+            break;
+        case WHITE_LIST:
+            bypass = 1;
+            if (ip_match < 0)
+                bypass = 0;                             // proxy IPs in white list
+            break;
+        }
+    }
+
+    if (bypass && !resolved) {
+        if (atyp == SOCKS5_ATYP_DOMAIN) {
+            if (get_sockaddr((char *)host, (char *)port, storage, 1, ipv6first) != 0)
+                bypass = 0;
+        } else {
+            if (get_sockaddr(ip, (char *)port, storage, 0, ipv6first) != 0)
+                bypass = 0;
+        }
+    }
+    return bypass;
+}
+
+static int
+server_http_handshake(SS_P_ ss_io *w, buffer_t *buf)
+{
+    server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
+    server_t *server              = server_recv_ctx->server;
+    remote_t *remote              = server->remote;
+
+    if (!server->http_parsed) {
+        size_t need_more = 0;
+        enum http_parse_status status =
+            http_parse_request(buf->data, buf->len, &server->http_req, &need_more);
+
+        if (status == HTTP_PARSE_INCOMPLETE) {
+            if (need_more > 0 && buf->len >= SOCKET_BUF_SIZE) {
+                http_send_error(server, "431 Request Header Fields Too Large");
+                close_and_free_server(SS_A_ server);
+            }
+            return -1;
+        }
+        if (status == HTTP_PARSE_ERROR) {
+            http_send_error(server, "400 Bad Request");
+            close_and_free_server(SS_A_ server);
+            return -1;
+        }
+        server->http_parsed = 1;
+    }
+
+    http_request_t *req = &server->http_req;
+
+    char ip[INET6_ADDRSTRLEN];
+    int atyp;
+    struct ss_ip ssip;
+
+    buffer_t *abuf = server->abuf;
+    abuf->idx = 0;
+    abuf->len = 0;
+
+    if (ss_ip_init(&ssip, req->host) != -1) {
+        if (ssip.version == 4) {
+            atyp = SOCKS5_ATYP_IPV4;
+            abuf->data[abuf->len++] = (char)atyp;
+            memcpy(abuf->data + abuf->len, ssip.bytes, 4);
+            abuf->len += 4;
+            ss_inet_ntop(AF_INET, ssip.bytes, ip, sizeof(ip));
+        } else {
+            atyp = SOCKS5_ATYP_IPV6;
+            abuf->data[abuf->len++] = (char)atyp;
+            memcpy(abuf->data + abuf->len, ssip.bytes, 16);
+            abuf->len += 16;
+            ss_inet_ntop(AF_INET6, ssip.bytes, ip, sizeof(ip));
+        }
+    } else {
+        size_t hlen = strlen(req->host);
+        if (hlen == 0 || hlen > 255) {
+            http_send_error(server, "400 Bad Request");
+            close_and_free_server(SS_A_ server);
+            return -1;
+        }
+        atyp = SOCKS5_ATYP_DOMAIN;
+        abuf->data[abuf->len++] = (char)atyp;
+        abuf->data[abuf->len++] = (char)hlen;
+        memcpy(abuf->data + abuf->len, req->host, hlen);
+        abuf->len += hlen;
+        ip[0] = '\0';
+    }
+
+    uint16_t numeric_port = 0;
+    if (parse_numeric_port(req->port, &numeric_port) != 0 || numeric_port == 0) {
+        http_send_error(server, "400 Bad Request");
+        close_and_free_server(SS_A_ server);
+        return -1;
+    }
+    abuf->data[abuf->len++] = (char)((numeric_port >> 8) & 0xff);
+    abuf->data[abuf->len++] = (char)(numeric_port & 0xff);
+
+    if (verbose) {
+        if (atyp == SOCKS5_ATYP_DOMAIN)
+            LOGI("http connect to %s:%s", req->host, req->port);
+        else
+            LOGI("http connect to [%s]:%s", ip, req->port);
+    }
+
+    struct sockaddr_storage storage;
+    memset(&storage, 0, sizeof(struct sockaddr_storage));
+    int bypass = local_http_should_bypass(req->host, req->port, atyp,
+                                          &storage, ip, sizeof(ip));
+    if (bypass) {
+        if (verbose)
+            LOGI("http bypass %s:%s", req->host, req->port);
+        remote = create_remote(server->listener, (struct sockaddr *)&storage, 1);
+    }
+
+    if (remote == NULL)
+        remote = create_remote(server->listener, NULL, 0);
+
+    if (remote == NULL) {
+        LOGE("invalid remote addr");
+        close_and_free_server(SS_A_ server);
+        return -1;
+    }
+
+    if (!remote->direct) {
+        int err = crypto->encrypt(abuf, server->e_ctx, SOCKET_BUF_SIZE);
+        if (err) {
+            LOGE("invalid password or cipher");
+            close_and_free_remote(SS_A_ remote);
+            close_and_free_server(SS_A_ server);
+            return -1;
+        }
+    }
+
+    size_t body_len = buf->len - req->header_len;
+
+    if (req->is_connect) {
+        static const char established[] =
+            "HTTP/1.1 200 Connection Established\r\n\r\n";
+        send(server->fd, established, sizeof(established) - 1, 0);
+
+        if (body_len > 0) {
+            memcpy(remote->buf->data, buf->data + req->header_len, body_len);
+            remote->buf->len = body_len;
+        }
+    } else {
+        size_t hdr_len = http_build_forward_request(req, remote->buf->data,
+                                                    SOCKET_BUF_SIZE);
+        if (hdr_len == 0 || hdr_len + body_len > SOCKET_BUF_SIZE) {
+            http_send_error(server, "400 Bad Request");
+            close_and_free_remote(SS_A_ remote);
+            close_and_free_server(SS_A_ server);
+            return -1;
+        }
+        if (body_len > 0)
+            memcpy(remote->buf->data + hdr_len, buf->data + req->header_len, body_len);
+        remote->buf->len = hdr_len + body_len;
+    }
+
+    server->stage  = STAGE_STREAM;
+    server->remote = remote;
+    remote->server = server;
+
+    if (remote->buf->len > 0)
+        return 0;
+
+    ss_timer_start(SS_A_ & server->delayed_connect_watcher);
+    return -1;
+}
+
+static void
 server_recv_cb(SS_P_ ss_io *w, int revents)
 {
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
@@ -899,6 +1133,12 @@ server_recv_cb(SS_P_ ss_io *w, int revents)
             if (buf->len < 1)
                 return;
             if (buf->data[0] != SVERSION) {
+                if (http_looks_like_request((const unsigned char *)buf->data,
+                                            buf->len)) {
+                    server->protocol = 1;
+                    server->stage    = STAGE_HTTP_HANDSHAKE;
+                    continue;
+                }
                 close_and_free_remote(SS_A_ remote);
                 close_and_free_server(SS_A_ server);
                 return;
@@ -940,6 +1180,10 @@ server_recv_cb(SS_P_ ss_io *w, int revents)
             return;
         } else if (server->stage == STAGE_HANDSHAKE) {
             int ret = server_handshake(SS_A_ w, buf);
+            if (ret)
+                return;
+        } else if (server->stage == STAGE_HTTP_HANDSHAKE) {
+            int ret = server_http_handshake(SS_A_ w, buf);
             if (ret)
                 return;
         }
@@ -1255,6 +1499,8 @@ new_server(int fd)
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     server->stage               = STAGE_INIT;
+    server->protocol            = 0;
+    server->http_parsed         = 0;
     server->recv_ctx->connected = 0;
     server->send_ctx->connected = 0;
     server->fd                  = fd;

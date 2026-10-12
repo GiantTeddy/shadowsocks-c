@@ -51,6 +51,7 @@ int send_traffic_stat(uint64_t tx, uint64_t rx);
 #define STAGE_ERROR     -1  /* Error detected                   */
 #define STAGE_INIT       0  /* Initial stage                    */
 #define STAGE_HANDSHAKE  1  /* Handshake with client            */
+#define STAGE_HTTP_HANDSHAKE 2 /* HTTP request handshake         */
 #define STAGE_RESOLVE    4  /* Resolve the hostname             */
 #define STAGE_STREAM     5  /* Stream between client and server */
 #define STAGE_STOP       6  /* Server stop to response          */

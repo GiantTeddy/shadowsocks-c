@@ -62,6 +62,11 @@ ss_add_test(test_base64
     "test_base64.c;${PROJECT_SOURCE_DIR}/src/base64.c"
     "")
 
+# test_http - HTTP CONNECT/absolute-URI request parser (no external deps)
+ss_add_test(test_http
+    "test_http.c;${PROJECT_SOURCE_DIR}/src/http.c"
+    "")
+
 # test_utils - needs sodium (for ss_malloc -> uses sodium in utils.c)
 ss_add_test(test_utils
     "test_utils.c;${PROJECT_SOURCE_DIR}/src/utils.c"
