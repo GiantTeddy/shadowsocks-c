@@ -691,6 +691,12 @@ usage(void)
 #if defined(MODULE_LOCAL) || defined(MODULE_REMOTE) || defined(MODULE_MANAGER)
     cli_help_option("--acl FILE", "Access control list.");
 #endif
+#ifdef MODULE_LOCAL
+    cli_help_option("--route-mode MODE", "Routing: all, bypass_lan, bypass_local, bypass_chn, chn_only, pac.");
+    cli_help_option("--chn-acl FILE", "China CIDR list for route modes.");
+    cli_help_option("--local-acl FILE", "Local ACL additions for route modes.");
+    cli_help_option("--pac-file FILE", "PAC file evaluated for --route-mode pac.");
+#endif
 #if defined(MODULE_REMOTE) && defined(__linux__) && defined(USE_NFTABLES)
     cli_help_option("--nftables-sets SETS", "Record malicious IPs in [table:]set[,set...] entries.");
 #endif

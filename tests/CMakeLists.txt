@@ -92,10 +92,15 @@ ss_add_test(test_netutils
     "test_netutils.c;${PROJECT_SOURCE_DIR}/src/netutils.c;${PROJECT_SOURCE_DIR}/src/utils.c"
     "${TEST_NETUTILS_LIBS}")
 
-# test_route - IP-based routing modes
+# test_route - IP-based routing modes (route.c also references pac_* symbols)
 ss_add_test(test_route
-    "test_route.c;${PROJECT_SOURCE_DIR}/src/route.c;${PROJECT_SOURCE_DIR}/src/ipset.c;${PROJECT_SOURCE_DIR}/src/netutils.c;${PROJECT_SOURCE_DIR}/src/utils.c"
-    "ss_sodium;ss_ev;ss_cares")
+    "test_route.c;${PROJECT_SOURCE_DIR}/src/route.c;${PROJECT_SOURCE_DIR}/src/pac.c;${PROJECT_SOURCE_DIR}/src/ipset.c;${PROJECT_SOURCE_DIR}/src/netutils.c;${PROJECT_SOURCE_DIR}/src/utils.c"
+    "ss_sodium;ss_ev;ss_cares;duktape;${SS_MATH_LIBRARY}")
+
+# test_pac - PAC engine (duktape) and its route integration
+ss_add_test(test_pac
+    "test_pac.c;${PROJECT_SOURCE_DIR}/src/pac.c;${PROJECT_SOURCE_DIR}/src/route.c;${PROJECT_SOURCE_DIR}/src/ipset.c;${PROJECT_SOURCE_DIR}/src/netutils.c;${PROJECT_SOURCE_DIR}/src/utils.c"
+    "ss_sodium;ss_ev;ss_cares;duktape;${SS_MATH_LIBRARY}")
 
 # test_cache - expiration uses a platform monotonic clock
 ss_add_test(test_cache

@@ -93,6 +93,7 @@ typedef struct {
     char *route_mode;
     char *chn_acl;
     char *local_acl;
+    char *pac_file;
 } jconf_t;
 
 jconf_t *read_jconf(const char *file);

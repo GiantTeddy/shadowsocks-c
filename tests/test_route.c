@@ -39,7 +39,7 @@ decide(const char *host, int atyp)
 
     ip[0] = '\0';
     memset(&storage, 0, sizeof(storage));
-    return route_decide(host, "443", atyp, ip, sizeof(ip), &storage);
+    return route_decide(NULL, host, "443", atyp, ip, sizeof(ip), &storage);
 }
 
 static void
@@ -50,6 +50,7 @@ test_mode_strings(void)
     assert(route_mode_from_string("bypass_local") == ROUTE_MODE_BYPASS_LOCAL);
     assert(route_mode_from_string("bypass_chn") == ROUTE_MODE_BYPASS_CHN);
     assert(route_mode_from_string("chn_only") == ROUTE_MODE_CHN_ONLY);
+    assert(route_mode_from_string("pac") == ROUTE_MODE_PAC);
     assert(route_mode_from_string("unknown") == -1);
     assert(route_mode_from_string("") == -1);
     assert(route_mode_from_string(NULL) == -1);
@@ -59,13 +60,14 @@ test_mode_strings(void)
     assert(strcmp(route_mode_name(ROUTE_MODE_BYPASS_LOCAL), "bypass_local") == 0);
     assert(strcmp(route_mode_name(ROUTE_MODE_BYPASS_CHN), "bypass_chn") == 0);
     assert(strcmp(route_mode_name(ROUTE_MODE_CHN_ONLY), "chn_only") == 0);
+    assert(strcmp(route_mode_name(ROUTE_MODE_PAC), "pac") == 0);
 }
 
 static void
 test_all(const char *chn)
 {
     assert(route_enabled() == 0);
-    assert(route_init(ROUTE_MODE_ALL, chn, NULL, 0) == 0);
+    assert(route_init(ROUTE_MODE_ALL, chn, NULL, NULL, 0) == 0);
     assert(route_enabled() == 1);
     assert(decide("127.0.0.1", SOCKS5_ATYP_IPV4) == ROUTE_PROXY);
     assert(decide("10.0.0.1", SOCKS5_ATYP_IPV4) == ROUTE_PROXY);
@@ -79,7 +81,7 @@ test_all(const char *chn)
 static void
 test_bypass_lan(const char *chn)
 {
-    assert(route_init(ROUTE_MODE_BYPASS_LAN, chn, NULL, 0) == 0);
+    assert(route_init(ROUTE_MODE_BYPASS_LAN, chn, NULL, NULL, 0) == 0);
     assert(decide("10.1.2.3", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
     assert(decide("192.168.1.1", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
     assert(decide("127.0.0.1", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
@@ -93,7 +95,7 @@ test_bypass_lan(const char *chn)
 static void
 test_bypass_local(const char *chn)
 {
-    assert(route_init(ROUTE_MODE_BYPASS_LOCAL, chn, NULL, 0) == 0);
+    assert(route_init(ROUTE_MODE_BYPASS_LOCAL, chn, NULL, NULL, 0) == 0);
     assert(decide("127.0.0.1", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
     assert(decide("169.254.1.1", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
     assert(decide("::1", SOCKS5_ATYP_IPV6) == ROUTE_DIRECT);
@@ -109,7 +111,7 @@ test_bypass_local(const char *chn)
 static void
 test_bypass_chn(const char *chn)
 {
-    assert(route_init(ROUTE_MODE_BYPASS_CHN, chn, NULL, 0) == 0);
+    assert(route_init(ROUTE_MODE_BYPASS_CHN, chn, NULL, NULL, 0) == 0);
     assert(decide("1.2.3.4", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
     assert(decide("2400:cb00::1", SOCKS5_ATYP_IPV6) == ROUTE_DIRECT);
     assert(decide("10.0.0.1", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
@@ -123,7 +125,7 @@ test_bypass_chn(const char *chn)
 static void
 test_chn_only(const char *chn)
 {
-    assert(route_init(ROUTE_MODE_CHN_ONLY, chn, NULL, 0) == 0);
+    assert(route_init(ROUTE_MODE_CHN_ONLY, chn, NULL, NULL, 0) == 0);
     assert(decide("1.2.3.4", SOCKS5_ATYP_IPV4) == ROUTE_PROXY);
     assert(decide("2400:cb00::1", SOCKS5_ATYP_IPV6) == ROUTE_PROXY);
     assert(decide("10.0.0.1", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
@@ -138,7 +140,7 @@ test_local_acl_augment(const char *chn)
     char local[256];
     write_temp(local, sizeof(local), "203.0.113.0/24\n");
 
-    assert(route_init(ROUTE_MODE_BYPASS_LAN, chn, local, 0) == 0);
+    assert(route_init(ROUTE_MODE_BYPASS_LAN, chn, local, NULL, 0) == 0);
     assert(decide("203.0.113.5", SOCKS5_ATYP_IPV4) == ROUTE_DIRECT);
     route_free();
 }

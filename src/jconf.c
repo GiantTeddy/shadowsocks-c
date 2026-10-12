@@ -466,6 +466,8 @@ read_jconf(const char *file)
                 conf.chn_acl = to_string(value);
             } else if (strcmp(name, "local_acl") == 0) {
                 conf.local_acl = to_string(value);
+            } else if (strcmp(name, "pac_file") == 0) {
+                conf.pac_file = to_string(value);
             } else if (strcmp(name, "manager_address") == 0) {
                 conf.manager_address = to_string(value);
             }

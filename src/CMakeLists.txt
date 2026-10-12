@@ -39,6 +39,15 @@ target_include_directories(blake3 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(blake3 PRIVATE -Wno-error -Wno-unused-function)
 set_target_properties(blake3 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Duktape (vendored) is the JavaScript engine behind the PAC router.
+add_library(duktape STATIC
+        duktape/duktape.c
+        )
+target_include_directories(duktape PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# vendored upstream code is not held to the project's -Werror budget
+target_compile_options(duktape PRIVATE -Wno-error)
+set_target_properties(duktape PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 if(SS_ENABLE_LEGACY)
     list(APPEND SS_CRYPTO_SOURCE stream.c)
 endif()
@@ -66,6 +75,7 @@ set(LIBSHADOWSOCKS_LIBEV_SOURCE
         local.c
         http.c
         route.c
+        pac.c
         resolv.c
         ssurl.c
         ${SS_CRYPTO_SOURCE}
@@ -113,7 +123,7 @@ set(SS_REDIR_SOURCE
         )
 
 
-set(SS_CORE_DEPS ss_ev ss_cares ss_sodium ss_mbedcrypto blake3 bloom Threads::Threads ${SS_MATH_LIBRARY})
+set(SS_CORE_DEPS ss_ev ss_cares ss_sodium ss_mbedcrypto blake3 bloom duktape Threads::Threads ${SS_MATH_LIBRARY})
 set(SS_ACL_DEPS)
 if(SS_ENABLE_REGEX)
     list(APPEND SS_ACL_DEPS ss_pcre2)

@@ -19,6 +19,7 @@
 #include "core.h"
 #include "ipset.h"
 #include "netutils.h"
+#include "pac.h"
 #include "route.h"
 #include "socks5.h"
 #include "utils.h"
@@ -208,6 +209,8 @@ route_mode_from_string(const char *s)
         return ROUTE_MODE_BYPASS_CHN;
     if (strcmp(s, "chn_only") == 0)
         return ROUTE_MODE_CHN_ONLY;
+    if (strcmp(s, "pac") == 0)
+        return ROUTE_MODE_PAC;
     return -1;
 }
 
@@ -225,6 +228,8 @@ route_mode_name(enum route_mode mode)
         return "bypass_chn";
     case ROUTE_MODE_CHN_ONLY:
         return "chn_only";
+    case ROUTE_MODE_PAC:
+        return "pac";
     default:
         return "unknown";
     }
@@ -239,15 +244,16 @@ route_free(void)
     ss_ipset_clear(&reserved_v6);
     ss_ipset_clear(&local_v4);
     ss_ipset_clear(&local_v6);
+    pac_free();
     route_initialized = 0;
     route_mode        = ROUTE_MODE_ALL;
 }
 
 int
 route_init(enum route_mode mode, const char *chn_path,
-           const char *local_path, int ipv6first)
+           const char *local_path, const char *pac_path, int ipv6first)
 {
-    if (mode < ROUTE_MODE_ALL || mode > ROUTE_MODE_CHN_ONLY)
+    if (mode < ROUTE_MODE_ALL || mode > ROUTE_MODE_PAC)
         return -1;
 
     route_free();
@@ -280,6 +286,12 @@ route_init(enum route_mode mode, const char *chn_path,
             return -1;
         }
         break;
+    case ROUTE_MODE_PAC:
+        if (pac_path == NULL || pac_init(pac_path) != 0) {
+            route_free();
+            return -1;
+        }
+        break;
     }
 
     route_initialized = 1;
@@ -292,8 +304,61 @@ route_enabled(void)
     return route_initialized;
 }
 
+/*
+ * PAC routing: ask the PAC engine about the request URL. A DIRECT result is
+ * resolved synchronously so the caller can connect by address; any evaluation
+ * error or resolution failure falls back to the proxy.
+ */
+static int
+route_decide_pac(const char *url, const char *host, const char *port,
+                 char *ip, size_t ip_len,
+                 struct sockaddr_storage *storage)
+{
+    char default_url[MAX_HOSTNAME_LEN + 32];
+    const char *effective_url = url;
+    const char *name          = NULL;
+
+    if (host != NULL && host[0] != '\0')
+        name = host;
+    else if (ip != NULL && ip[0] != '\0')
+        name = ip;
+
+    if (effective_url == NULL) {
+        if (name == NULL)
+            return ROUTE_PROXY;
+        snprintf(default_url, sizeof(default_url), "http://%s:%s/", name,
+                 (port != NULL && port[0] != '\0') ? port : "80");
+        effective_url = default_url;
+    }
+
+    if (pac_evaluate(effective_url, name) != ROUTE_DIRECT)
+        return ROUTE_PROXY;
+
+    if (name == NULL || storage == NULL)
+        return ROUTE_PROXY;
+
+    memset(storage, 0, sizeof(*storage));
+    if (get_sockaddr((char *)name, (char *)port, storage, 1, route_ipv6first) != 0)
+        return ROUTE_PROXY;
+
+    if (ip != NULL && ip_len > 0) {
+        if (storage->ss_family == AF_INET) {
+            if (!ss_inet_ntop(AF_INET,
+                              &((struct sockaddr_in *)storage)->sin_addr,
+                              ip, (socklen_t)ip_len))
+                ip[0] = '\0';
+        } else if (storage->ss_family == AF_INET6) {
+            if (!ss_inet_ntop(AF_INET6,
+                              &((struct sockaddr_in6 *)storage)->sin6_addr,
+                              ip, (socklen_t)ip_len))
+                ip[0] = '\0';
+        }
+    }
+    return ROUTE_DIRECT;
+}
+
 int
-route_decide(const char *host, const char *port, int atyp,
+route_decide(const char *url, const char *host, const char *port, int atyp,
              char *ip, size_t ip_len,
              struct sockaddr_storage *storage)
 {
@@ -301,6 +366,8 @@ route_decide(const char *host, const char *port, int atyp,
         return ROUTE_PROXY;
     if (route_mode == ROUTE_MODE_ALL)
         return ROUTE_PROXY;
+    if (route_mode == ROUTE_MODE_PAC)
+        return route_decide_pac(url, host, port, ip, ip_len, storage);
 
     const char *literal = NULL;
     if (atyp != SOCKS5_ATYP_DOMAIN && ip != NULL && ip[0] != '\0') {

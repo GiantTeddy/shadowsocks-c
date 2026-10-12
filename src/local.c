@@ -515,7 +515,7 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
     if (route_enabled()) {
         struct sockaddr_storage storage;
         memset(&storage, 0, sizeof(storage));
-        if (route_decide(host, port, atyp, ip, sizeof(ip), &storage) == ROUTE_DIRECT) {
+        if (route_decide(NULL, host, port, atyp, ip, sizeof(ip), &storage) == ROUTE_DIRECT) {
             if (verbose) {
                 if (atyp == SOCKS5_ATYP_DOMAIN)
                     LOGI("bypass %s:%s", host, port);
@@ -873,14 +873,15 @@ http_send_error(server_t *server, const char *status)
  * already buffered. Returns 1 and fills storage when the request bypasses.
  */
 static int
-local_http_should_bypass(const char *host, const char *port, int atyp,
-                         struct sockaddr_storage *storage, char *ip, size_t ip_len)
+local_http_should_bypass(const char *url, const char *host, const char *port,
+                         int atyp, struct sockaddr_storage *storage,
+                         char *ip, size_t ip_len)
 {
     int bypass   = 0;
     int resolved = 0;
 
     if (route_enabled())
-        return route_decide(host, port, atyp, ip, ip_len, storage) == ROUTE_DIRECT;
+        return route_decide(url, host, port, atyp, ip, ip_len, storage) == ROUTE_DIRECT;
 
     if (!acl
 #ifdef __ANDROID__
@@ -1028,9 +1029,19 @@ server_http_handshake(SS_P_ ss_io *w, buffer_t *buf)
             LOGI("http connect to [%s]:%s", ip, req->port);
     }
 
+    char url[HTTP_TARGET_MAX_LEN + MAX_HOSTNAME_LEN + 16];
+    if (req->is_connect) {
+        snprintf(url, sizeof(url), "https://%s:%s/", req->host, req->port);
+    } else if (strcmp(req->port, "80") == 0) {
+        snprintf(url, sizeof(url), "http://%s%s", req->host, req->target);
+    } else {
+        snprintf(url, sizeof(url), "http://%s:%s%s", req->host, req->port,
+                 req->target);
+    }
+
     struct sockaddr_storage storage;
     memset(&storage, 0, sizeof(struct sockaddr_storage));
-    int bypass = local_http_should_bypass(req->host, req->port, atyp,
+    int bypass = local_http_should_bypass(url, req->host, req->port, atyp,
                                           &storage, ip, sizeof(ip));
     if (bypass) {
         if (verbose)
@@ -1765,6 +1776,7 @@ main(int argc, char **argv)
     char *route_mode = NULL;
     char *chn_acl    = NULL;
     char *local_acl  = NULL;
+    char *pac_file   = NULL;
 
     char *plugin      = NULL;
     char *plugin_opts = NULL;
@@ -1866,6 +1878,18 @@ Same behavior as `-V`; see that option for details. Short alias: `-V`.
 Same behavior as `-S`; see that option for details. Short alias: `-S`.
 [cli_long_stat_path] */
 
+/* [cli_long_route_mode]
+\par `--route-mode <mode>`
+Select how each request is routed: `all` (proxy everything), `bypass_lan`,
+`bypass_local`, `bypass_chn`, `chn_only`, or `pac` (evaluate a PAC file).
+[cli_long_route_mode] */
+
+/* [cli_long_pac_file]
+\par `--pac-file <pac_file>`
+Path to the PAC file evaluated for `--route-mode pac`. The file must define
+`FindProxyForURL(url, host)`.
+[cli_long_pac_file] */
+
 /* [cli-options]
 \snippet{doc} utils.c cli_short_f
 \snippet{doc} utils.c cli_short_s
@@ -1907,6 +1931,8 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
 \snippet{doc} utils.c cli_long_ipv4_first
 \snippet{doc} local.c cli_long_vpn
 \snippet{doc} local.c cli_long_stat_path
+\snippet{doc} local.c cli_long_route_mode
+\snippet{doc} local.c cli_long_pac_file
 \snippet{doc} utils.c cli_long_reuse_port
 \snippet{doc} utils.c cli_long_tcp_incoming_sndbuf
 \snippet{doc} utils.c cli_long_tcp_incoming_rcvbuf
@@ -1958,6 +1984,7 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
         { "route-mode",  required_argument, NULL, GETOPT_VAL_ROUTE_MODE  },
         { "chn-acl",     required_argument, NULL, GETOPT_VAL_CHN_ACL     },
         { "local-acl",   required_argument, NULL, GETOPT_VAL_LOCAL_ACL   },
+        { "pac-file",    required_argument, NULL, GETOPT_VAL_PAC_FILE    },
         { "mtu",         required_argument, NULL, GETOPT_VAL_MTU         },
         { "mptcp",       no_argument,       NULL, GETOPT_VAL_MPTCP       },
         { "plugin",      required_argument, NULL, GETOPT_VAL_PLUGIN      },
@@ -2009,6 +2036,9 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
             break;
         case GETOPT_VAL_LOCAL_ACL:
             local_acl = optarg;
+            break;
+        case GETOPT_VAL_PAC_FILE:
+            pac_file = optarg;
             break;
         case GETOPT_VAL_MTU:
             if (ss_parse_int(optarg, 0, INT_MAX, &mtu) == -1) {
@@ -2283,6 +2313,9 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
         if (local_acl == NULL) {
             local_acl = conf->local_acl;
         }
+        if (pac_file == NULL) {
+            pac_file = conf->pac_file;
+        }
     }
 
     if (route_mode != NULL) {
@@ -2291,7 +2324,7 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
             fprintf(stderr, "invalid route_mode: %s\n", route_mode);
             exit(EXIT_FAILURE);
         }
-        if (route_init((enum route_mode)parsed_mode, chn_acl, local_acl, ipv6first) != 0) {
+        if (route_init((enum route_mode)parsed_mode, chn_acl, local_acl, pac_file, ipv6first) != 0) {
             fprintf(stderr, "failed to initialize route mode: %s\n", route_mode);
             exit(EXIT_FAILURE);
         }
