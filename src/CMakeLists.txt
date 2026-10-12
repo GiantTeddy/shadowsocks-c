@@ -65,6 +65,7 @@ set(LIBSHADOWSOCKS_LIBEV_SOURCE
         cache.c
         local.c
         http.c
+        route.c
         resolv.c
         ssurl.c
         ${SS_CRYPTO_SOURCE}

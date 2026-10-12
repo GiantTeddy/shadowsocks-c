@@ -57,6 +57,7 @@
 #include "utils.h"
 #include "socks5.h"
 #include "acl.h"
+#include "route.h"
 #include "plugin.h"
 #include "local.h"
 #include "ss_windows.h"
@@ -399,7 +400,9 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
         return -1;
     }
 
-    char host[MAX_HOSTNAME_LEN + 1], ip[INET6_ADDRSTRLEN], port[16];
+    char host[MAX_HOSTNAME_LEN + 1] = { 0 };
+    char ip[INET6_ADDRSTRLEN]       = { 0 };
+    char port[16]                   = { 0 };
 
     buffer_t *abuf = server->abuf;
     abuf->idx = 0;
@@ -417,7 +420,7 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
         memcpy(abuf->data + abuf->len, buf->data + request_len, in_addr_len + 2);
         abuf->len += in_addr_len + 2;
 
-        if (acl || verbose) {
+        if (acl || verbose || route_enabled()) {
             uint16_t p = load16_be(buf->data + request_len + in_addr_len);
             if (!ss_inet_ntop(AF_INET, (const void *)(buf->data + request_len),
                            ip, INET_ADDRSTRLEN)) {
@@ -438,7 +441,7 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
         memcpy(abuf->data + abuf->len, buf->data + request_len + 1, name_len + 2);
         abuf->len += name_len + 2;
 
-        if (acl || verbose) {
+        if (acl || verbose || route_enabled()) {
             uint16_t p = load16_be(buf->data + request_len + 1 + name_len);
             memcpy(host, buf->data + request_len + 1, name_len);
             host[name_len] = '\0';
@@ -452,7 +455,7 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
         memcpy(abuf->data + abuf->len, buf->data + request_len, in6_addr_len + 2);
         abuf->len += in6_addr_len + 2;
 
-        if (acl || verbose) {
+        if (acl || verbose || route_enabled()) {
             uint16_t p = load16_be(buf->data + request_len + in6_addr_len);
             if (!ss_inet_ntop(AF_INET6, (const void *)(buf->data + request_len),
                            ip, INET6_ADDRSTRLEN)) {
@@ -471,7 +474,7 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
         return -1;
     }
 
-    if (acl && atyp == SOCKS5_ATYP_DOMAIN && !server->dns_done
+    if (!route_enabled() && acl && atyp == SOCKS5_ATYP_DOMAIN && !server->dns_done
 #ifdef __ANDROID__
         && !vpn
 #endif
@@ -509,7 +512,21 @@ server_handshake(SS_P_ ss_io *w, buffer_t *buf)
             LOGI("connect to [%s]:%s", ip, port);
     }
 
-    if (acl
+    if (route_enabled()) {
+        struct sockaddr_storage storage;
+        memset(&storage, 0, sizeof(storage));
+        if (route_decide(host, port, atyp, ip, sizeof(ip), &storage) == ROUTE_DIRECT) {
+            if (verbose) {
+                if (atyp == SOCKS5_ATYP_DOMAIN)
+                    LOGI("bypass %s:%s", host, port);
+                else if (atyp == 1)
+                    LOGI("bypass %s:%s", ip, port);
+                else if (atyp == 4)
+                    LOGI("bypass [%s]:%s", ip, port);
+            }
+            remote = create_remote(server->listener, (struct sockaddr *)&storage, 1);
+        }
+    } else if (acl
 #ifdef __ANDROID__
         && !(vpn && strcmp(port, "53") == 0)
 #endif
@@ -861,6 +878,9 @@ local_http_should_bypass(const char *host, const char *port, int atyp,
 {
     int bypass   = 0;
     int resolved = 0;
+
+    if (route_enabled())
+        return route_decide(host, port, atyp, ip, ip_len, storage) == ROUTE_DIRECT;
 
     if (!acl
 #ifdef __ANDROID__
@@ -1742,6 +1762,9 @@ main(int argc, char **argv)
     char *pid_path   = NULL;
     char *conf_path  = NULL;
     char *iface      = NULL;
+    char *route_mode = NULL;
+    char *chn_acl    = NULL;
+    char *local_acl  = NULL;
 
     char *plugin      = NULL;
     char *plugin_opts = NULL;
@@ -1932,6 +1955,9 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
         { "fast-open",   no_argument,       NULL, GETOPT_VAL_FAST_OPEN   },
         { "no-delay",    no_argument,       NULL, GETOPT_VAL_NODELAY     },
         { "acl",         required_argument, NULL, GETOPT_VAL_ACL         },
+        { "route-mode",  required_argument, NULL, GETOPT_VAL_ROUTE_MODE  },
+        { "chn-acl",     required_argument, NULL, GETOPT_VAL_CHN_ACL     },
+        { "local-acl",   required_argument, NULL, GETOPT_VAL_LOCAL_ACL   },
         { "mtu",         required_argument, NULL, GETOPT_VAL_MTU         },
         { "mptcp",       no_argument,       NULL, GETOPT_VAL_MPTCP       },
         { "plugin",      required_argument, NULL, GETOPT_VAL_PLUGIN      },
@@ -1974,6 +2000,15 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
         case GETOPT_VAL_ACL:
             LOGI("initializing acl...");
             acl = !init_acl(optarg);
+            break;
+        case GETOPT_VAL_ROUTE_MODE:
+            route_mode = optarg;
+            break;
+        case GETOPT_VAL_CHN_ACL:
+            chn_acl = optarg;
+            break;
+        case GETOPT_VAL_LOCAL_ACL:
+            local_acl = optarg;
             break;
         case GETOPT_VAL_MTU:
             if (ss_parse_int(optarg, 0, INT_MAX, &mtu) == -1) {
@@ -2239,6 +2274,28 @@ Same behavior as `-S`; see that option for details. Short alias: `-S`.
             LOGI("initializing acl...");
             acl = !init_acl(conf->acl);
         }
+        if (route_mode == NULL) {
+            route_mode = conf->route_mode;
+        }
+        if (chn_acl == NULL) {
+            chn_acl = conf->chn_acl;
+        }
+        if (local_acl == NULL) {
+            local_acl = conf->local_acl;
+        }
+    }
+
+    if (route_mode != NULL) {
+        int parsed_mode = route_mode_from_string(route_mode);
+        if (parsed_mode < 0) {
+            fprintf(stderr, "invalid route_mode: %s\n", route_mode);
+            exit(EXIT_FAILURE);
+        }
+        if (route_init((enum route_mode)parsed_mode, chn_acl, local_acl, ipv6first) != 0) {
+            fprintf(stderr, "failed to initialize route mode: %s\n", route_mode);
+            exit(EXIT_FAILURE);
+        }
+        LOGI("route mode: %s", route_mode_name((enum route_mode)parsed_mode));
     }
 
     if (complete_server_ports(remote_addr, remote_num, remote_port, plugin != NULL) != 0)
