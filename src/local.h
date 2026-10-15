@@ -46,6 +46,11 @@ typedef struct listen_ctx {
     int fd;
     int mptcp;
     struct sockaddr **remote_addr;
+    int resolve_count;
+    char **resolve_host;
+    uint16_t *resolve_port;
+    int *resolve_index;
+    struct ss_timer resolve_timer;
 } listen_ctx_t;
 
 typedef struct server_ctx {

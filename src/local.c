@@ -1755,6 +1755,78 @@ accept_cb(SS_P_ ss_io *w, int revents)
 }
 
 #ifndef LIB_ONLY
+
+#define SRV_RESOLVE_INTERVAL 60.0
+
+static listen_ctx_t *resolve_listener = NULL;
+
+static int
+is_ip_literal(const char *host)
+{
+    struct in_addr a4;
+    struct in6_addr a6;
+
+    return host != NULL &&
+           (inet_pton(AF_INET, host, &a4) == 1 || inet_pton(AF_INET6, host, &a6) == 1);
+}
+
+struct srv_resolve_ctx {
+    listen_ctx_t *listener;
+    int index;
+};
+
+static void
+srv_resolved_cb(struct sockaddr *addr, void *data)
+{
+    struct srv_resolve_ctx *ctx = (struct srv_resolve_ctx *)data;
+    listen_ctx_t *listener = ctx->listener;
+
+    if (addr == NULL || ctx->index < 0 || ctx->index >= listener->remote_num)
+        return;
+
+    struct sockaddr *cur = listener->remote_addr[ctx->index];
+    int changed = cur == NULL ||
+                  cur->sa_family != addr->sa_family ||
+                  sockaddr_cmp((struct sockaddr_storage *)cur,
+                               (struct sockaddr_storage *)addr,
+                               get_sockaddr_len(addr)) != 0;
+    if (!changed)
+        return;
+
+    int len = get_sockaddr_len(addr);
+    struct sockaddr *copy = ss_malloc(len);
+    memcpy(copy, addr, len);
+    listener->remote_addr[ctx->index] = copy;
+    if (cur != NULL)
+        ss_free(cur);
+    LOGI("server address refreshed for endpoint %d", ctx->index);
+}
+
+static void
+srv_resolve_free(void *data)
+{
+    ss_free(data);
+}
+
+static void
+srv_resolve_timer_cb(SS_P_ ss_timer *w, int revents)
+{
+    listen_ctx_t *listener = resolve_listener;
+
+    if (listener != NULL) {
+        for (int i = 0; i < listener->resolve_count; i++) {
+            struct srv_resolve_ctx *ctx = ss_malloc(sizeof(*ctx));
+            ctx->listener = listener;
+            ctx->index    = listener->resolve_index[i];
+            resolv_start(listener->resolve_host[i], listener->resolve_port[i],
+                         srv_resolved_cb, srv_resolve_free, ctx);
+        }
+    }
+
+    ss_timer_set(w, SRV_RESOLVE_INTERVAL, 0.0);
+    ss_timer_start(SS_DEFAULT, w);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2561,6 +2633,27 @@ Path to the PAC file evaluated for `--route-mode pac`. The file must define
         if (plugin != NULL)
             break;
     }
+
+    listen_ctx.resolve_count = 0;
+    listen_ctx.resolve_host  = ss_malloc(sizeof(char *) * remote_num);
+    listen_ctx.resolve_port  = ss_malloc(sizeof(uint16_t) * remote_num);
+    listen_ctx.resolve_index = ss_malloc(sizeof(int) * remote_num);
+    if (plugin == NULL) {
+        for (i = 0; i < remote_num; i++) {
+            char *host = remote_addr[i].host;
+            char *port = remote_addr[i].port == NULL ? remote_port : remote_addr[i].port;
+            if (host == NULL || is_ip_literal(host))
+                continue;
+            uint16_t p = 0;
+            if (port != NULL)
+                parse_numeric_port(port, &p);
+            listen_ctx.resolve_host[listen_ctx.resolve_count]  = strdup(host);
+            listen_ctx.resolve_port[listen_ctx.resolve_count]  = p;
+            listen_ctx.resolve_index[listen_ctx.resolve_count] = i;
+            listen_ctx.resolve_count++;
+        }
+    }
+
     listen_ctx.timeout = timeout_secs;
     listen_ctx.iface   = iface;
     listen_ctx.mptcp   = mptcp;
@@ -2581,7 +2674,14 @@ Path to the PAC file evaluated for `--route-mode pac`. The file must define
         LOGI("listening at %s:%s", local_addr, local_port);
 
     struct ss_loop *loop = SS_DEFAULT;
-    if (acl) resolv_init(loop, NULL, ipv6first);
+    if (acl || listen_ctx.resolve_count > 0)
+        resolv_init(loop, NULL, ipv6first);
+
+    if (listen_ctx.resolve_count > 0) {
+        resolve_listener = &listen_ctx;
+        ss_timer_init(&listen_ctx.resolve_timer, srv_resolve_timer_cb, SRV_RESOLVE_INTERVAL, 0.0);
+        ss_timer_start(loop, &listen_ctx.resolve_timer);
+    }
 
     if (mode != UDP_ONLY) {
         // Setup socket
