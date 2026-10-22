@@ -1818,7 +1818,7 @@ srv_resolve_timer_cb(SS_P_ ss_timer *w, int revents)
             struct srv_resolve_ctx *ctx = ss_malloc(sizeof(*ctx));
             ctx->listener = listener;
             ctx->index    = listener->resolve_index[i];
-            resolv_start(listener->resolve_host[i], listener->resolve_port[i],
+            resolv_start(listener->resolve_host[i], htons(listener->resolve_port[i]),
                          srv_resolved_cb, srv_resolve_free, ctx);
         }
     }
