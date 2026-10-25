@@ -20,6 +20,76 @@ Use `--help` for grouped CLI options and `--version` for version information.
 See [CLI conventions](https://shadowsocks.github.io/shadowsocks-c/index.html#cli_conventions)
 for the long flags, short aliases, and configuration precedence.
 
+## About this alternative build
+
+This repository is an **alternative distribution** of shadowsocks-c maintained
+at [GiantTeddy/shadowsocks-c](https://github.com/GiantTeddy/shadowsocks-c). It
+tracks upstream [shadowsocks/shadowsocks-c](https://github.com/shadowsocks/shadowsocks-c)
+and keeps full protocol, CLI and configuration compatibility; everything in the
+rest of this README applies. On top of upstream it adds a small set of features
+and publishes ready-to-install portable packages.
+
+### Additional features
+
+- **Native HTTP proxy on the local port.** `ss-local` accepts both SOCKS5 and
+  plain HTTP proxy traffic on the same listening port — `CONNECT` and regular
+  HTTP forwarding are auto-detected per request. Browsers and tools configured
+  with a plain HTTP proxy work without an extra conversion layer.
+- **IP-based routing modes.** The new `route_mode` config option decides per
+  destination whether traffic goes through the server or directly:
+  `all` (default), `bypass_lan`, `bypass_local`, `bypass_chn` (direct for
+  China/mainland + local ranges, using the bundled `chn.acl` CIDR list),
+  `chn_only`. Lists are configured with `chn_acl` / `local_acl`.
+- **PAC routing.** `route_mode: "pac"` evaluates a standard Proxy
+  Auto-Configuration file (set `pac_file`) per request with an embedded
+  [duktape](https://duktape.org/) JavaScript engine.
+- **DDNS-friendly server resolution.** When the configured server is a
+  hostname, `ss-local` re-resolves it every 60 seconds and transparently
+  switches to the new address, so a server IP change no longer kills a running
+  tunnel.
+
+Example client configuration using the extensions:
+
+```json
+{
+    "server": "ss.example.com",
+    "server_port": 8388,
+    "local_address": "127.0.0.1",
+    "local_port": 1080,
+    "password": "replace-with-a-long-random-password",
+    "method": "aes-256-gcm",
+    "mode": "tcp_and_udp",
+    "route_mode": "bypass_chn",
+    "chn_acl": "/opt/shadowsocks-c/acl/chn.acl",
+    "local_acl": "/opt/shadowsocks-c/acl/local.acl"
+}
+```
+
+### Portable static packages
+
+Releases on this repository are built as **fully static musl binaries**
+(`docker/static/Dockerfile`): the executables bundle libc and every
+third-party library, so the published `.deb` declares **no dependencies at
+all** — no specific GLIBC version, no libuv/libmbedtls/libsodium packages —
+and installs on any Debian-family release (Debian, Ubuntu and derivatives;
+verified against focal, jammy, noble and bookworm). The package ships the five
+binaries under `/opt/shadowsocks-c/bin` (symlinked into `/usr/local/bin`),
+the ACL lists, a systemd client unit and a placeholder config under
+`/etc/shadowsocks-c/`.
+
+```bash
+# grab an asset from https://github.com/GiantTeddy/shadowsocks-c/releases
+sudo dpkg -i shadowsocks-c_*_amd64.deb
+sudo vim /etc/shadowsocks-c/config.json   # fill in server / password / method
+sudo systemctl restart shadowsocks-c.service
+```
+
+Releases are cut automatically by the `release-deb` workflow whenever a
+`v3.3.6-http-pac-routing.*` tag is pushed; the same tag also produces a plain
+binary tarball and `SHA256SUMS`. Nothing in this build changes the wire
+protocol — these servers and clients interoperate with upstream shadowsocks-c,
+shadowsocks-libev and shadowsocks-rust.
+
 ## Community
 
 See the [contribution guide](CONTRIBUTION.md) for development setup, testing,
