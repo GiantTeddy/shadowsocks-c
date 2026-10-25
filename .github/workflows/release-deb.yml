@@ -34,17 +34,26 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake dpkg-dev
+          sudo apt-get install -y --no-install-recommends build-essential cmake dpkg-dev file
 
-      - name: Build
+      - name: Build fully static binaries (musl)
+        # docker/static/Dockerfile runs unit/vendor tests and TCP/UDP interop
+        # checks inside the build; the artifacts stage exports bin/ and licenses.
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel "$(nproc)"
+          docker build -f docker/static/Dockerfile \
+            --target artifacts --output type=local,dest=static-out .
 
-      - name: Unit tests
-        run: ctest --test-dir build -L unit --output-on-failure
+      - name: Check binaries are fully static
+        run: |
+          for b in static-out/bin/ss-*; do
+            file "$b"
+            if readelf -l "$b" | grep -q INTERP; then echo "$b has an interpreter" >&2; exit 1; fi
+            if readelf -d "$b" | grep -q NEEDED; then echo "$b has NEEDED entries" >&2; exit 1; fi
+          done
 
       - name: Build .deb
+        env:
+          BIN_DIR: static-out/bin
         run: bash scripts/build_custom_deb.sh
 
       - name: Upload workflow artifacts
@@ -63,5 +72,5 @@ jobs:
           else
             gh release create "$RELEASE_TAG" dist/* \
               --title "$RELEASE_TAG" \
-              --notes "Automated build for ${RELEASE_TAG#v}. Includes the .deb package and Linux x86_64 binaries; verify with SHA256SUMS."
+              --notes "Automated build for ${RELEASE_TAG#v}. Fully static (musl) x86_64 binaries: the .deb has no libc6 or third-party library dependencies and runs on any Debian-family release; verify with SHA256SUMS."
           fi

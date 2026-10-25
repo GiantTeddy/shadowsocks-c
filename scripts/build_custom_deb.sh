@@ -65,6 +65,20 @@ for a in chn.acl local.acl; do
     fi
 done
 
+# Fully static binaries (musl build, docker/static/Dockerfile) must not declare libc6.
+STATIC=1
+for b in $BINARIES; do
+    if readelf -l "$BIN_DIR/$b" 2>/dev/null | grep -q INTERP; then
+        STATIC=0
+    fi
+    if readelf -d "$BIN_DIR/$b" 2>/dev/null | grep -q NEEDED; then
+        STATIC=0
+    fi
+done
+if [ "$STATIC" -eq 1 ]; then
+    echo "static binaries detected: package will have no library dependencies"
+fi
+
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 ROOT="$STAGE/pkg/shadowsocks-c"
@@ -151,7 +165,7 @@ Architecture: $ARCH
 Maintainer: GiantTeddy <gianteddy@users.noreply.github.com>
 Section: net
 Priority: optional
-Depends: libc6 (>= 2.34)
+Depends: @DEPENDS@
 Description: lightweight SOCKS5/HTTP proxy with IP and PAC routing
  shadowsocks-c is a lightweight and secure SOCKS5 proxy (a port of
  shadowsocks-libev) with added features:
@@ -165,6 +179,12 @@ Description: lightweight SOCKS5/HTTP proxy with IP and PAC routing
  /opt/shadowsocks-c (symlinked into /usr/local/bin) and provides a
  shadowsocks-c.service client unit.
 CTL
+
+if [ "$STATIC" -eq 1 ]; then
+    sed -i '/^Depends: @DEPENDS@$/d' "$ROOT/DEBIAN/control"
+else
+    sed -i 's|^Depends: @DEPENDS@$|Depends: libc6 (>= 2.34)|' "$ROOT/DEBIAN/control"
+fi
 
 echo "/etc/shadowsocks-c/config.json" > "$ROOT/DEBIAN/conffiles"
 
@@ -212,7 +232,9 @@ chmod 0644 "$ROOT/opt/shadowsocks-c/acl/"* \
 
 mkdir -p "$OUT_DIR"
 DEB="$OUT_DIR/shadowsocks-c_${VERSION}_${ARCH}.deb"
-dpkg-deb --build --root-owner-group "$ROOT" "$DEB" >/dev/null
+# -Zxz keeps the package installable on old dpkg releases (dpkg >= 1.22
+# defaults to zstd, which buster/bullseye dpkg cannot read).
+dpkg-deb --build -Zxz --root-owner-group "$ROOT" "$DEB" >/dev/null
 
 # Binary tarball (bin/ + acl/ + checksums), matching the release layout.
 TF="$STAGE/tar"
